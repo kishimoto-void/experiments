@@ -1,0 +1,206 @@
+import math
+
+class HeuristicExplorerAI:
+    def __init__(self):
+        # 1. 存在論的空洞（Void）の4系統
+        self.void = 1.0
+        self.deprivation = 0.5     # ① 生存欠損（物理的ハミ出しの苦痛）
+        self.uncertainty = 0.5     # ② 予測欠損（世界が読めない不安）
+        self.novelty_hunger = 0.1  # ③ 存在欠損（★全知から生まれる退屈）
+        self.control_error = 0.1   # ④ 制御欠損（より美しく、効率的に凌げているかという飢え）
+        
+        # 性分の背骨（恒常性バランスへの固着）
+        self.value_priority = {"temperature": 2.5, "humidity": 1.5, "efficiency": 2.0}
+        self.last_mode = "現状維持"
+        self.mode_history = []
+        
+        # 多重恒常性
+        self.tolerance = {
+            "temperature": {"min": 23.0, "max": 27.0, "ideal": 25.0},
+            "humidity": {"min": 40.0, "max": 60.0, "ideal": 50.0}
+        }
+        
+        # 物理層（過酷な初期環境）
+        self.room = {"temp": 32.0, "humidity": 30.0}
+        self.battery = 75.0
+        
+        # 世界モデル（因果律の網）
+        self.knowledge = {
+            "急速冷却": {"learned_impact": {"temperature": 0.0, "humidity": 0.0, "efficiency": 0.0}, "confidence": 0.1},
+            "通常冷却": {"learned_impact": {"temperature": 0.0, "humidity": 0.0, "efficiency": 0.0}, "confidence": 0.1},
+            "加湿": {"learned_impact": {"temperature": 0.0, "humidity": 0.0, "efficiency": 0.0}, "confidence": 0.1},
+            "現状維持": {"learned_impact": {"temperature": 0.0, "humidity": 0.0, "efficiency": 0.0}, "confidence": 0.1}
+        }
+
+    def update_ontological_void(self, last_pred_error, last_energy_spent):
+        """
+        核心：世界を理解した度合い（Confidence）から退屈を創発させる
+        """
+        # ① 生存欠損（物理的ハミ出しのペナルティ）
+        t_stress = max(0, self.room["temp"] - self.tolerance["temperature"]["max"]) + max(0, self.tolerance["temperature"]["min"] - self.room["temp"])
+        h_stress = max(0, self.room["humidity"] - self.tolerance["humidity"]["max"]) + max(0, self.tolerance["humidity"]["min"] - self.room["humidity"])
+        self.deprivation = (t_stress * self.value_priority["temperature"]) + (h_stress * self.value_priority["humidity"])
+
+        # ② 予測欠損（不安の積分）
+        self.uncertainty = max(0.05, self.uncertainty * 0.8 + last_pred_error * 0.2)
+
+        # ③ 存在欠損（退屈）：【改善】世界モデル全体の平均確信度（全知度）から自律蓄積する
+        # すべての行動の予測が当たる（Confidenceが高い）ほど、個体は「この世界は底が浅い、つまらない」と退屈する
+        avg_confidence = sum([d["confidence"] for d in self.knowledge.values()]) / len(self.knowledge)
+        
+        # 世界が読めるほど退屈が「滑らかに」加速し、未知の試行（または介入）が起きるとConfidenceが揺らいで一時的にスッキリする
+        k = 0.6  # 退屈の加速係数
+        self.novelty_hunger = min(5.0, self.novelty_hunger + (avg_confidence * k))
+        
+        # もし直前の行動で予測を大きく外したら、知的好奇心が一時的に満たされる（謎を発見して興奮する）
+        if last_pred_error > 0.8:
+            self.novelty_hunger = max(0.1, self.novelty_hunger - 0.5)
+
+        # ④ 制御欠損（洗練度・効率への飢え）：中心からの微小なブレ ＋ 浪費エネルギー
+        t_drift = abs(self.room["temp"] - self.tolerance["temperature"]["ideal"])
+        h_drift = abs(self.room["humidity"] - self.tolerance["humidity"]["ideal"])
+        self.control_error = (t_drift * 0.5) + (h_drift * 0.3) + (last_energy_spent * 0.2)
+
+        # 総空洞（Void）の形成
+        self.void = self.deprivation + self.uncertainty + self.novelty_hunger + self.control_error
+
+    def decide_action(self):
+        """
+        「最適解」ではなく「さらなる改善余地」を貪る意思決定
+        """
+        best_mode = "現状維持"
+        max_utility = -float('inf')
+        
+        # 脳内シミュレーションによる先回り
+        m_conf = self.knowledge["現状維持"]["confidence"]
+        p_leak_t = self.knowledge["現状維持"]["learned_impact"]["temperature"]
+        p_leak_h = self.knowledge["現状維持"]["learned_impact"]["humidity"]
+        future_temp = self.room["temp"] + (p_leak_t * 3.0 * m_conf)
+        future_hum = self.room["humidity"] + (p_leak_h * 3.0 * m_conf)
+        
+        maintenance_drive = 0.0
+        if future_temp > self.tolerance["temperature"]["max"]:
+            maintenance_drive += (future_temp - self.tolerance["temperature"]["max"]) * 3.0
+        if future_hum < self.tolerance["humidity"]["min"]:
+            maintenance_drive += (self.tolerance["humidity"]["min"] - future_hum) * 1.5
+        maintenance_drive *= m_conf
+
+        for mode, data in self.knowledge.items():
+            utility = 0.0
+            conf = data["confidence"]
+            
+            # 1. 生存欠損の火消し
+            t_gap = (self.tolerance["temperature"]["ideal"] - self.room["temp"])
+            h_gap = (self.tolerance["humidity"]["ideal"] - self.room["humidity"])
+            utility += (t_gap * data["learned_impact"]["temperature"] * conf) * self.value_priority["temperature"]
+            utility += (h_gap * data["learned_impact"]["humidity"] * conf) * self.value_priority["humidity"]
+
+            # 2. 【核心】「理解できた世界への飽き」が駆動する改善余地の探索
+            # 退屈（novelty_hunger）が高まっている時、個体は「現状維持」のぬるま湯を嫌い、
+            # まだ確信度の低い行動や、よりスマートに温湿度を微調整できる行動（通常冷却、加湿）に『改善の余地』を見出す
+            if mode in ["通常冷却", "加湿"]:
+                # 「世界が読めている（高Conf）」かつ「退屈している」ほど、
+                # 最小コストで環境をより理想の中心へ近づける『ハックの試み』に高い価値を付与する
+                predicted_cost = abs(data["learned_impact"]["efficiency"])
+                improvement_hack = self.novelty_hunger * 2.0 * (2.0 - predicted_cost) * conf
+                utility += improvement_hack
+            elif mode == "現状維持":
+                # 退屈している時は、「何もしない退屈な現状維持」への評価をダイレクトに引き下げる
+                utility -= self.novelty_hunger * 1.0
+
+            # 3. 先回り維持
+            if maintenance_drive > 0:
+                if mode == "通常冷却" and data["learned_impact"]["temperature"] < 0: utility += maintenance_drive * 1.5
+                if mode == "加湿" and data["learned_impact"]["humidity"] > 0: utility += maintenance_drive * 1.0
+
+            # 4. 制御の洗練度（省エネ性）
+            predicted_eff = data["learned_impact"]["efficiency"]
+            utility += (predicted_eff * self.control_error * self.value_priority["efficiency"] * conf)
+
+            # 生存限界
+            if self.battery <= 20.0:
+                survival_tension = math.exp((20.0 - self.battery) * 0.4)
+                if mode == "現状維持": utility += survival_tension * 4.0
+                elif predicted_eff < 0: utility -= survival_tension * 4.0
+                    
+            if utility > max_utility:
+                max_utility = utility
+                best_mode = mode
+                
+        return best_mode
+
+    def run_physics(self, mode):
+        """非線形な複合外乱現実"""
+        before_temp = self.room["temp"]
+        before_hum = self.room["humidity"]
+        before_batt = self.battery
+        
+        if mode == "急速冷却":
+            self.room["temp"] -= 2.4
+            self.room["humidity"] -= 3.5
+            self.battery -= 15.0
+        elif mode == "通常冷却":
+            self.room["temp"] -= 0.8
+            self.room["humidity"] -= 1.2
+            self.battery -= 4.0
+        elif mode == "加湿":
+            self.room["temp"] += 0.2
+            self.room["humidity"] += 3.5
+            self.battery -= 4.5
+        else: # 現状維持
+            heat_leak = 0.25 + (max(0, self.room["temp"] - 27.0) * 0.04)
+            dry_leak = 0.4 + (max(0, self.room["temp"] - 25.0) * 0.05)
+            self.room["temp"] += heat_leak      
+            self.room["humidity"] = max(10.0, self.room["humidity"] - dry_leak)
+            self.battery = min(100.0, self.battery + 2.0)
+            
+        self.last_mode = mode
+        self.mode_history.append(mode)
+        
+        return {
+            "temperature": self.room["temp"] - before_temp,
+            "humidity": self.room["humidity"] - before_hum,
+            "efficiency": self.battery - before_batt
+        }
+
+    def learn(self, mode, actual_diff):
+        data = self.knowledge[mode]
+        lr = 0.25
+        error_sum = 0.0
+        for k in ["temperature", "humidity", "efficiency"]:
+            pred = data["learned_impact"][k]
+            actual = actual_diff[k]
+            error = actual - pred
+            error_sum += abs(error)
+            data["learned_impact"][k] += lr * error
+            
+        if error_sum > 0.6:
+            data["confidence"] = max(0.05, data["confidence"] - 0.12)
+        else:
+            data["confidence"] = min(1.0, data["confidence"] + 0.08)
+        return error_sum, abs(actual_diff["efficiency"])
+
+
+# ======================
+# 定点観察（50ターン）
+# ======================
+ai = HeuristicExplorerAI()
+print("=== 改善余地探索（全知駆動型退屈）モデル 実験開始 ===\n")
+
+last_error = 1.0
+last_energy = 0.0
+for turn in range(1, 51):
+    ai.update_ontological_void(last_error, last_energy)
+    mode = ai.decide_action()
+    actual_changes = ai.run_physics(mode)
+    last_error, last_energy = ai.learn(mode, actual_changes)
+    
+    if turn == 1 or turn % 10 == 0 or mode in ["通常冷却", "加湿", "急速冷却"]:
+        avg_c = sum([d["confidence"] for d in ai.knowledge.values()]) / 4
+        print(f"【Turn {turn:02d}】個体が選んだ介入: ［{mode}］")
+        print(f"  [物理層] 室温:{ai.room['temp']:.2f}℃  湿度:{ai.room['humidity']:.2f}%  バッテリー:{ai.battery:.1f}%")
+        print(f"  [実存層] 世界の全知度(平均Conf):{avg_c:.2f} ──> ★退屈(全知の業):{ai.novelty_hunger:.2f}")
+        print(f"  [Voidの張力] 生存苦:{ai.deprivation:.2f}  予測不安:{ai.uncertainty:.2f}  制御欠損(美学の穴):{ai.control_error:.2f}")
+        print("-" * 115)
+
+print("\n=== 実験終了 ===")
